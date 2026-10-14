@@ -1,0 +1,16 @@
+{
+  "name": "ramadan-bot",
+  "version": "1.0.0",
+  "description": "Bot Discord Ramadan - Reduygenk-KantDev",
+  "main": "index.js",
+  "scripts": {
+    "start": "node --no-warnings index.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "discord.js": "^14.22.1",
+    "dotenv": "^16.4.5"
+  }
+}
