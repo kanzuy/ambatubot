@@ -17,6 +17,11 @@ module.exports = function ibadah(ctx) {
   const { db, baseEmbed, okEmbed, errEmbed, EPHEMERAL, isAdmin, hasMemberRole, wibNow, tglIndo, fmt, addMoney, track } = ctx;
 
   const REWARD = { kebaikan: 2000, tilawah: 3000, muhasabah: 2000, amal: 5000 };
+  // Hadiah money + XP (XP = money dibagi 1.000)
+  const beri = (uid, n) => {
+    addMoney(uid, n);
+    ctx.addXp(uid, n / 1000);
+  };
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS kebaikan (user_id TEXT, day TEXT, teks TEXT, PRIMARY KEY (user_id, day));
@@ -84,7 +89,7 @@ module.exports = function ibadah(ctx) {
     if (st.insKebaikan.run(i.user.id, wibNow().day, teks).changes === 0) {
       return i.reply(ephemeral(okEmbed('Kamu sudah melapor kebaikan hari ini.')));
     }
-    addMoney(i.user.id, REWARD.kebaikan);
+    beri(i.user.id, REWARD.kebaikan);
     track(i.user.id, 'kebaikan');
     return i.reply(ephemeral(baseEmbed('🤍 Kebaikan tercatat', `"${teks}"\n\n💵 **+${fmt(REWARD.kebaikan)} money**\nSemoga berkah dan dibalas kebaikan.`, 0x2ecc71)));
   });
@@ -112,7 +117,7 @@ module.exports = function ibadah(ctx) {
       track(i.user.id, 'tilawah');
       let hadiah = 'Hadiah harian sudah kamu ambil, progres tetap tercatat.';
       if (!sebelum) {
-        addMoney(i.user.id, REWARD.tilawah);
+        beri(i.user.id, REWARD.tilawah);
         hadiah = `💵 **+${fmt(REWARD.tilawah)} money** (hadiah harian)`;
       }
       const total = st.sumTil.get(i.user.id).total;
@@ -205,7 +210,7 @@ module.exports = function ibadah(ctx) {
     const baik = i.fields.getTextInputValue('baik').trim();
     const perbaiki = i.fields.getTextInputValue('perbaiki').trim();
     if (st.insMuh.run(i.user.id, wibNow().day, baik, perbaiki).changes === 0) return i.reply(ephemeral(okEmbed('Kamu sudah mengisi muhasabah hari ini.')));
-    addMoney(i.user.id, REWARD.muhasabah);
+    beri(i.user.id, REWARD.muhasabah);
     track(i.user.id, 'muhasabah');
     return i.reply(ephemeral(baseEmbed('🌙 Muhasabah tersimpan', `**Disyukuri:** ${baik}\n\n**Diperbaiki besok:** ${perbaiki}\n\n💵 **+${fmt(REWARD.muhasabah)} money**\n-# Jurnal ini cuma kamu yang lihat.`, 0x2ecc71)));
   });
@@ -312,7 +317,7 @@ module.exports = function ibadah(ctx) {
         const a = st.getAmal.get(id);
         if (!a) return i.reply(ephemeral(errEmbed(`Tantangan #${id} nggak ditemukan.`)));
         if (st.insDone.run(i.user.id, id, Date.now()).changes === 0) return i.reply(ephemeral(okEmbed(`Kamu sudah menyelesaikan tantangan #${id}.`)));
-        addMoney(i.user.id, REWARD.amal);
+        beri(i.user.id, REWARD.amal);
         track(i.user.id, 'amal');
         return i.reply(ephemeral(baseEmbed('🤝 Amal tercatat', `Tantangan **#${id} ${a.judul}** selesai.\n💵 **+${fmt(REWARD.amal)} money**\nSemoga menjadi amal yang diterima.`, 0x2ecc71)));
       }

@@ -1,7 +1,8 @@
 // ============================================================
-//  11 game Ramadan - Reduygenk-KantDev
+//  Game Ramadan - Reduygenk-KantDev
 //  Hadiah semua berupa money (poin leaderboard nggak ikut).
 //  Batas money dari game: GAME_DAILY_CAP per orang per hari.
+//  Hasil game tampil sebagai kartu gambar (banner menang/kalah).
 // ============================================================
 const crypto = require('node:crypto');
 const {
@@ -12,6 +13,8 @@ const {
   TextInputBuilder,
   TextInputStyle,
   Events,
+  AttachmentBuilder,
+  EmbedBuilder,
 } = require('discord.js');
 const D = require('./data');
 
@@ -19,6 +22,7 @@ module.exports = function games(ctx) {
   const {
     client, db, baseEmbed, errEmbed, EPHEMERAL, hasMemberRole, wibNow, fmt, track, didToday,
     addMoney, getCfg, setCfg, sendTo, balas, balasEmbed, commands, adminCommands, GAME_DAILY_CAP,
+    pakaiGambar, profil, profilDariUser,
   } = ctx;
   const { Primary, Secondary, Success, Danger } = ButtonStyle;
 
@@ -76,7 +80,26 @@ module.exports = function games(ctx) {
   };
   const respond = (i, payload) => (i.isFromMessage?.() ? i.update(payload) : i.reply(payload));
 
-  // Money dari game, dibatasi per hari
+  // ---------- payload gambar ----------
+  // Gambar ditampilkan lewat embed. edit=true dipakai untuk update/edit (membuang lampiran lama).
+  const lamp = (buf, nama) => new AttachmentBuilder(buf, { name: nama });
+  const gp = (buf, nama, { components = [], edit = false, flags, content } = {}) => ({
+    ...(content !== undefined ? { content } : {}),
+    embeds: [new EmbedBuilder().setColor(0x145a43).setImage(`attachment://${nama}`)],
+    files: [lamp(buf, nama)],
+    components,
+    ...(edit ? { attachments: [] } : {}),
+    ...(flags ? { flags } : {}),
+  });
+  // kirim gambar sebagai jawaban interaksi (update kalau berasal dari pesan/tombol, reply kalau bukan)
+  const kirim = (i, buf, nama, components = []) =>
+    i.isFromMessage?.() || i.isButton?.() ? i.update(gp(buf, nama, { components, edit: true })) : i.reply(gp(buf, nama, { components, flags: EPHEMERAL }));
+  const kartuSolo = async (i, { status, judul, baris }) => {
+    const prof = profilDariUser(i.user, i.member);
+    return pakaiGambar((gm) => gm.renderHasil({ status, judul, nama: prof.nama, avatarUrl: prof.avatarUrl, baris }));
+  };
+
+  // Money dari game, dibatasi per hari. Juga ngasih XP (money / 1.000).
   function giveGameMoney(uid, amount) {
     const day = wibNow().day;
     const sudah = st.getEarn.get(uid, day)?.total ?? 0;
@@ -84,6 +107,7 @@ module.exports = function games(ctx) {
     if (granted > 0) {
       st.setEarn.run(uid, day, sudah + granted);
       addMoney(uid, granted);
+      ctx.addXp(uid, Math.floor(granted / 1000));
     }
     return { granted, capped: granted < amount };
   }
@@ -91,15 +115,28 @@ module.exports = function games(ctx) {
     r.granted === 0
       ? `💵 Batas money game hari ini (${fmt(GAME_DAILY_CAP)}) sudah tercapai.`
       : `💵 **+${fmt(r.granted)} money**${r.capped ? ' (kena batas harian)' : ''}`;
+  const uangPolos = (r) => (r.granted === 0 ? 'Batas harian tercapai' : `+${fmt(r.granted)} money${r.capped ? ' (kena batas)' : ''}`);
+  const HIJAU = '#3fbf7f';
+
   // Hadiah lawan: 1x per pasangan per hari (biar nggak bisa digilir dua akun)
   function pairOnce(a, b) {
-    const pair = [a, b].sort().join(':');
-    return st.insPair.run(wibNow().day, pair).changes === 1;
+    return st.insPair.run(wibNow().day, [a, b].sort().join(':')).changes === 1;
   }
   function hadiahPvp(winner, loser, amount) {
     track(winner, 'game'); track(loser, 'game'); track(winner, 'menang');
-    if (!pairOnce(winner, loser)) return '💵 Hadiah buat pasangan ini sudah diambil hari ini.';
-    return uang(giveGameMoney(winner, amount));
+    if (!pairOnce(winner, loser)) return { md: '💵 Hadiah buat pasangan ini sudah diambil hari ini.', polos: 'Sudah diambil hari ini' };
+    const r = giveGameMoney(winner, amount);
+    return { md: uang(r), polos: uangPolos(r) };
+  }
+  async function kartuDuel(judul, wId, lId, { seri = false, barisW = [], barisL = [], hadiah = '' }) {
+    const [pw, pl] = [await profil(wId), await profil(lId)];
+    return pakaiGambar((gm) =>
+      gm.renderDuel({
+        judul, seri,
+        pemenang: { ...pw, baris: barisW }, kalah: { ...pl, baris: barisL },
+        baris: hadiah ? [['Hadiah', hadiah]] : [],
+      }),
+    );
   }
 
   // =========================================================
@@ -144,8 +181,13 @@ module.exports = function games(ctx) {
     tebakHarga.delete(mid);
     const benar = Math.abs(tebakan - s.item.harga) <= s.item.harga * 0.1;
     track(i.user.id, 'game'); track(i.user.id, 'tebakharga');
-    const hadiah = benar ? uang(giveGameMoney(i.user.id, 3000)) : '💵 +0 money';
-    const e = baseEmbed(benar ? '✅ Tebakan tepat!' : '❌ Belum tepat', `**${s.item.nama}**\nTebakan kamu: **Rp${fmt(tebakan)}**\nHarga sebenarnya: **Rp${fmt(s.item.harga)}**\n\n${hadiah}`, benar ? 0x2ecc71 : 0xe74c3c);
+    const r = benar ? giveGameMoney(i.user.id, 3000) : null;
+    const buf = await kartuSolo(i, {
+      status: benar ? 'menang' : 'kalah', judul: 'TEBAK HARGA',
+      baris: [['Barang', s.item.nama.slice(0, 26)], ['Tebakan', `Rp${fmt(tebakan)}`], ['Harga asli', `Rp${fmt(s.item.harga)}`], ['Hadiah', r ? uangPolos(r) : '+0 money', benar ? HIJAU : undefined]],
+    });
+    if (buf) return kirim(i, buf, 'hasil.png');
+    const e = baseEmbed(benar ? '✅ Tebakan tepat!' : '❌ Belum tepat', `**${s.item.nama}**\nTebakan kamu: **Rp${fmt(tebakan)}**\nHarga sebenarnya: **Rp${fmt(s.item.harga)}**\n\n${r ? uang(r) : '💵 +0 money'}`, benar ? 0x2ecc71 : 0xe74c3c);
     return respond(i, { embeds: [e], components: [] });
   });
 
@@ -183,11 +225,11 @@ module.exports = function games(ctx) {
     return res;
   }
   const WD_EMO = { g: '🟩', y: '🟨', x: '⬛' };
+  // tampilan cadangan (embed) kalau gambar gagal dibuat
   function wordleEmbed(guesses, target, done, won, hadiah = '') {
     const baris = guesses.map((g) => `${wordleFeedback(g, target).map((c) => WD_EMO[c]).join('')}  \`${g.split('').join(' ')}\``);
     for (let k = guesses.length; k < 6; k++) baris.push('⬜⬜⬜⬜⬜');
-    let judul = '🟩 Wordle Ramadhan';
-    let warna = 0x5865f2;
+    let judul = '🟩 Wordle Ramadhan', warna = 0x5865f2;
     let tambah = `Tebak kata 5 huruf bertema Ramadan. Sisa kesempatan: **${6 - guesses.length}**`;
     if (done) {
       judul = won ? '🎉 Wordle: berhasil!' : '😢 Wordle: gagal';
@@ -196,6 +238,15 @@ module.exports = function games(ctx) {
     }
     return baseEmbed(judul, `${baris.join('\n')}\n\n${tambah}`, warna);
   }
+  const wordleGambar = (guesses, target, done, won, hadiahPolos) => {
+    const feedback = guesses.map((g) => wordleFeedback(g, target));
+    const pesan = done
+      ? won ? `Berhasil di tebakan ke-${guesses.length}!\n${hadiahPolos}` : `Gagal. Katanya: ${target}\n${hadiahPolos || '+0 money'}`
+      : `Sisa kesempatan: ${6 - guesses.length}\nTekan Tebak buat masukin kata`;
+    return pakaiGambar((gm) =>
+      gm.renderWordle({ guesses, feedback, selesai: done, menang: won, pesan, bannerUrl: done ? (won ? gm.ASSETS.BANNER_MENANG : gm.ASSETS.BANNER_KALAH) : '' }),
+    );
+  };
   commands.wordle = async (msg) => {
     if (!butuhRole(msg)) return;
     return balas(msg, {
@@ -203,6 +254,7 @@ module.exports = function games(ctx) {
       components: [row(btn('g:wd:open', 'Main Wordle hari ini', Primary, '🟩'))],
     });
   };
+  const tombolTebak = () => row(btn('g:wd:guess', 'Tebak', Primary, '✏️'));
   ctx.onButton('g:wd:open', async (i) => {
     if (!butuhRoleI(i)) return;
     const day = wibNow().day;
@@ -210,11 +262,10 @@ module.exports = function games(ctx) {
     const r = st.getWordle.get(i.user.id, day);
     const guesses = r ? JSON.parse(r.guesses) : [];
     const done = !!r?.done;
-    return i.reply({
-      embeds: [wordleEmbed(guesses, target, done, !!r?.won)],
-      components: done ? [] : [row(btn('g:wd:guess', 'Tebak', Primary, '✏️'))],
-      flags: EPHEMERAL,
-    });
+    const buf = await wordleGambar(guesses, target, done, !!r?.won, '');
+    const comps = done ? [] : [tombolTebak()];
+    if (buf) return i.reply(gp(buf, 'wordle.png', { components: comps, flags: EPHEMERAL }));
+    return i.reply({ embeds: [wordleEmbed(guesses, target, done, !!r?.won)], components: comps, flags: EPHEMERAL });
   });
   ctx.onButton('g:wd:guess', async (i) => {
     const modal = new ModalBuilder()
@@ -235,15 +286,15 @@ module.exports = function games(ctx) {
     guesses.push(kata);
     const menang = kata === target;
     const selesai = menang || guesses.length >= 6;
-    let hadiah = '';
-    if (menang) hadiah = uang(giveGameMoney(i.user.id, Math.max(1000, 6000 - (guesses.length - 1) * 1000)));
+    let hadiah = null;
+    if (menang) hadiah = giveGameMoney(i.user.id, Math.max(1000, 6000 - (guesses.length - 1) * 1000));
     st.setWordle.run(i.user.id, day, JSON.stringify(guesses), selesai ? 1 : 0, menang ? 1 : 0);
     track(i.user.id, 'wordle');
     if (selesai) track(i.user.id, 'game');
-    return respond(i, {
-      embeds: [wordleEmbed(guesses, target, selesai, menang, hadiah)],
-      components: selesai ? [] : [row(btn('g:wd:guess', 'Tebak', Primary, '✏️'))],
-    });
+    const buf = await wordleGambar(guesses, target, selesai, menang, hadiah ? uangPolos(hadiah) : '');
+    const comps = selesai ? [] : [tombolTebak()];
+    if (buf) return respond(i, i.isFromMessage?.() ? gp(buf, 'wordle.png', { components: comps, edit: true }) : gp(buf, 'wordle.png', { components: comps, flags: EPHEMERAL }));
+    return respond(i, { embeds: [wordleEmbed(guesses, target, selesai, menang, hadiah ? uang(hadiah) : '')], components: comps });
   });
 
   // =========================================================
@@ -309,9 +360,14 @@ module.exports = function games(ctx) {
     clearTimeout(g.timer);
     sk.delete(g.ch.id);
     g.players.forEach((p) => track(p, 'game'));
-    let hadiah = 'Hadiah money cuma berlaku kalau pemain minimal 3.';
-    if (g.total >= 3) hadiah = uang(giveGameMoney(winner, 5000));
-    await g.ch.send({ embeds: [baseEmbed('🏆 Sambung kata selesai', `Pemenang: <@${winner}>\n${hadiah}`, 0x2ecc71)], allowedMentions: { parse: [] } }).catch(() => {});
+    const r = g.total >= 3 ? giveGameMoney(winner, 5000) : null;
+    const polos = r ? uangPolos(r) : 'Hadiah hanya jika pemain minimal 3';
+    const prof = await profil(winner);
+    const buf = await pakaiGambar((gm) => gm.renderHasil({ status: 'menang', judul: 'SAMBUNG KATA', nama: prof.nama, avatarUrl: prof.avatarUrl, baris: [['Jumlah pemain', String(g.total)], ['Hadiah', polos, r ? HIJAU : undefined]] }));
+    const payload = buf
+      ? { ...gp(buf, 'hasil.png', { content: `🏆 <@${winner}>` }), allowedMentions: { parse: [] } }
+      : { embeds: [baseEmbed('🏆 Sambung kata selesai', `Pemenang: <@${winner}>\n${r ? uang(r) : polos}`, 0x2ecc71)], allowedMentions: { parse: [] } };
+    await g.ch.send(payload).catch(() => {});
   }
   client.on(Events.MessageCreate, async (msg) => {
     try {
@@ -402,15 +458,19 @@ module.exports = function games(ctx) {
     }
     games.delete(i.message.id);
     const pa = s.picks[s.a], pb = s.picks[s.b];
-    let hasil, teks = `<@${s.a}> ${SUIT[pa]} vs ${SUIT[pb]} <@${s.b}>\n\n`;
+    let teks = `<@${s.a}> ${SUIT[pa]} vs ${SUIT[pb]} <@${s.b}>\n\n`;
+    let buf;
     if (pa === pb) {
-      hasil = 'Seri!';
       [s.a, s.b].forEach((p) => track(p, 'game'));
-      teks += `**${hasil}** Nggak ada pemenang.`;
+      teks += '**Seri!** Nggak ada pemenang.';
+      buf = await kartuDuel('SUIT', s.a, s.b, { seri: true, barisW: [`memilih ${pa}`], barisL: [`memilih ${pb}`] });
     } else {
       const [w, l] = MENANG_ATAS[pa] === pb ? [s.a, s.b] : [s.b, s.a];
-      teks += `Pemenang: <@${w}>\n${hadiahPvp(w, l, 2000)}`;
+      const h = hadiahPvp(w, l, 2000);
+      teks += `Pemenang: <@${w}>\n${h.md}`;
+      buf = await kartuDuel('SUIT', w, l, { barisW: [`memilih ${s.picks[w]}`], barisL: [`memilih ${s.picks[l]}`], hadiah: h.polos });
     }
+    if (buf) return i.update(gp(buf, 'duel.png', { content: '', edit: true }));
     return i.update({ content: '', embeds: [baseEmbed('✊ Suit selesai', teks, 0x2ecc71)], components: [] });
   });
 
@@ -426,9 +486,14 @@ module.exports = function games(ctx) {
         return btn(`g:tt:${k}`, '\u200b', v === 'x' ? Danger : v === 'o' ? Primary : Secondary, v === 'x' ? '❌' : v === 'o' ? '⭕' : null, selesai || !!v);
       })),
     );
-  const tttMulai = (i, s) => {
+  const tttGambar = (s, o = {}) => pakaiGambar((gm) => gm.renderTTT({ board: s.board, a: s.pa, b: s.pb, giliran: s.turn, ...o }));
+  const tttMulai = async (i, s) => {
     s.board = Array(9).fill(null);
     s.turn = 'x';
+    s.pa = await profil(s.a);
+    s.pb = await profil(s.b);
+    const buf = await tttGambar(s);
+    if (buf) return i.update(gp(buf, 'ttt.png', { content: '', components: tttKomponen(s.board, false), edit: true }));
     return i.update({
       content: '',
       embeds: [baseEmbed('⭕ Tic-Tac-Toe', `❌ <@${s.a}> vs ⭕ <@${s.b}>\nGiliran: ❌ <@${s.a}>`, 0xe67e22)],
@@ -448,17 +513,33 @@ module.exports = function games(ctx) {
     const penuh = s.board.every(Boolean);
     if (garis || penuh) {
       games.delete(i.message.id);
+      const papan = await tttGambar(s, { garis, selesai: true, seri: !garis });
       let teks = `❌ <@${s.a}> vs ⭕ <@${s.b}>\n\n`;
+      let duel;
       if (garis) {
         const w = giliran, l = giliran === s.a ? s.b : s.a;
-        teks += `Pemenang: <@${w}>\n${hadiahPvp(w, l, 2000)}`;
+        const h = hadiahPvp(w, l, 2000);
+        teks += `Pemenang: <@${w}>\n${h.md}`;
+        duel = await kartuDuel('TIC-TAC-TOE', w, l, { barisW: [s.turn === 'x' ? 'bermain X' : 'bermain O'], barisL: [s.turn === 'x' ? 'bermain O' : 'bermain X'], hadiah: h.polos });
       } else {
         [s.a, s.b].forEach((p) => track(p, 'game'));
         teks += '**Seri!** Nggak ada pemenang.';
+        duel = await kartuDuel('TIC-TAC-TOE', s.a, s.b, { seri: true });
+      }
+      if (duel && papan) {
+        return i.update({
+          content: '',
+          embeds: [new EmbedBuilder().setColor(0x145a43).setImage('attachment://duel.png'), new EmbedBuilder().setColor(0x145a43).setImage('attachment://ttt.png')],
+          files: [lamp(duel, 'duel.png'), lamp(papan, 'ttt.png')],
+          components: [],
+          attachments: [],
+        });
       }
       return i.update({ embeds: [baseEmbed('⭕ Tic-Tac-Toe selesai', teks, 0x2ecc71)], components: tttKomponen(s.board, true) });
     }
     s.turn = s.turn === 'x' ? 'o' : 'x';
+    const buf = await tttGambar(s);
+    if (buf) return i.update(gp(buf, 'ttt.png', { components: tttKomponen(s.board, false), edit: true }));
     const next = s.turn === 'x' ? `❌ <@${s.a}>` : `⭕ <@${s.b}>`;
     return i.update({ embeds: [baseEmbed('⭕ Tic-Tac-Toe', `❌ <@${s.a}> vs ⭕ <@${s.b}>\nGiliran: ${next}`, 0xe67e22)], components: tttKomponen(s.board, false) });
   });
@@ -502,14 +583,19 @@ module.exports = function games(ctx) {
     games.delete(s.message.id);
     const [a, b] = [s.skor[s.a], s.skor[s.b]];
     let teks = `<@${s.a}> **${a}** - **${b}** <@${s.b}>\n\n`;
+    let buf;
     if (a === b) {
       [s.a, s.b].forEach((p) => track(p, 'game'));
       teks += '**Seri!** Nggak ada pemenang.';
+      buf = await kartuDuel('BATTLE QUIZ', s.a, s.b, { seri: true, barisW: [`skor ${a}`], barisL: [`skor ${b}`] });
     } else {
       const [w, l] = a > b ? [s.a, s.b] : [s.b, s.a];
-      teks += `Pemenang: <@${w}>\n${hadiahPvp(w, l, 3000)}`;
+      const h = hadiahPvp(w, l, 3000);
+      teks += `Pemenang: <@${w}>\n${h.md}`;
+      buf = await kartuDuel('BATTLE QUIZ', w, l, { barisW: [`skor ${s.skor[w]}`], barisL: [`skor ${s.skor[l]}`], hadiah: h.polos });
     }
-    await s.message.edit({ embeds: [baseEmbed('⚔️ Battle quiz selesai', teks, 0x2ecc71)], components: [] }).catch(() => {});
+    const payload = buf ? gp(buf, 'duel.png', { content: '', edit: true }) : { embeds: [baseEmbed('⚔️ Battle quiz selesai', teks, 0x2ecc71)], components: [] };
+    await s.message.edit(payload).catch(() => {});
   }
   ctx.onButton('g:bt:', async (i) => {
     const s = games.get(i.message.id);
@@ -536,16 +622,22 @@ module.exports = function games(ctx) {
   // =========================================================
   const tl = new Map();
   const norm = (t) => String(t).toLowerCase().replace(/[^a-z0-9]/g, '');
-  const tlEmbed = (s, akhir = null) => {
+  const tlEmbed = (s) => {
     const l = s.lagu;
     const huruf = norm(l.judul).length;
     const petunjuk = [`🎼 Genre: **${l.genre}**`, `🎤 Artis: **${l.artis}**`, `🔤 Judul **${huruf} huruf** (tanpa spasi/tanda baca), diawali huruf **${norm(l.judul)[0].toUpperCase()}**`];
-    const tampil = petunjuk.slice(0, s.hints).join('\n');
     const hadiah = 4000 - (s.hints - 1) * 1000;
-    if (akhir) return baseEmbed(akhir.judul, `Judulnya: **${l.judul}** (${l.artis})\n${akhir.teks}`, akhir.warna);
-    return baseEmbed('🎵 Tebak lagu', `${tampil}\n\nHadiah kalau benar sekarang: **${fmt(hadiah)} money**\nKesempatan menjawab tersisa: **${2 - s.tries}**\n-# Tiap petunjuk tambahan mengurangi hadiah 1.000.`, 0x1abc9c);
+    return baseEmbed('🎵 Tebak lagu', `${petunjuk.slice(0, s.hints).join('\n')}\n\nHadiah kalau benar sekarang: **${fmt(hadiah)} money**\nKesempatan menjawab tersisa: **${2 - s.tries}**\n-# Tiap petunjuk tambahan mengurangi hadiah 1.000.`, 0x1abc9c);
   };
   const tlTombol = (uid, s) => row(btn(`g:tl:hint:${uid}`, 'Petunjuk berikutnya', Secondary, '💡', s.hints >= 3), btn(`g:tl:ans:${uid}`, 'Jawab', Primary, '🎵'));
+  const tlAkhir = async (i, s, menang, r) => {
+    const buf = await kartuSolo(i, {
+      status: menang ? 'menang' : 'kalah', judul: 'TEBAK LAGU',
+      baris: [['Judul', s.lagu.judul.slice(0, 26)], ['Artis', s.lagu.artis.slice(0, 26)], ['Hadiah', r ? uangPolos(r) : '+0 money', menang ? HIJAU : undefined]],
+    });
+    if (buf) return kirim(i, buf, 'hasil.png');
+    return respond(i, { embeds: [baseEmbed(menang ? '✅ Benar!' : '❌ Kesempatan habis', `Judulnya: **${s.lagu.judul}** (${s.lagu.artis})\n${r ? uang(r) : '💵 +0 money'}`, menang ? 0x2ecc71 : 0xe74c3c)], components: [] });
+  };
   commands.tebaklagu = async (msg) => {
     if (!butuhRole(msg)) return;
     const s = { uid: msg.author.id, lagu: pick(D.LAGU), hints: 1, tries: 0, exp: Date.now() + 5 * 60000 };
@@ -576,13 +668,12 @@ module.exports = function games(ctx) {
     if (benar) {
       tl.delete(mid);
       track(s.uid, 'game'); track(s.uid, 'tebaklagu');
-      const r = uang(giveGameMoney(s.uid, 4000 - (s.hints - 1) * 1000));
-      return respond(i, { embeds: [tlEmbed(s, { judul: '✅ Benar!', teks: r, warna: 0x2ecc71 })], components: [] });
+      return tlAkhir(i, s, true, giveGameMoney(s.uid, 4000 - (s.hints - 1) * 1000));
     }
     if (s.tries >= 2) {
       tl.delete(mid);
       track(s.uid, 'game'); track(s.uid, 'tebaklagu');
-      return respond(i, { embeds: [tlEmbed(s, { judul: '❌ Kesempatan habis', teks: '💵 +0 money', warna: 0xe74c3c })], components: [] });
+      return tlAkhir(i, s, false, null);
     }
     return respond(i, { embeds: [tlEmbed(s)], components: [tlTombol(s.uid, s)] });
   });
@@ -613,9 +704,8 @@ module.exports = function games(ctx) {
   };
 
   // =========================================================
-  // 8. RAMADHAN BINGO (kartu misi harian)
+  // 8. RAMADHAN BINGO (kartu misi harian, tampil sebagai gambar)
   // =========================================================
-  const GARIS = TTT_LINES;
   function kartuBingo(uid, day) {
     const rnd = mulberry32(hashStr(uid + day));
     return shuffle(Object.keys(D.MISI), (n) => Math.floor(rnd() * n)).slice(0, 9);
@@ -623,16 +713,20 @@ module.exports = function games(ctx) {
   function statusBingo(uid) {
     const kartu = kartuBingo(uid, wibNow().day);
     const done = kartu.map((k) => didToday(uid, k));
-    return { kartu, done, garis: GARIS.filter((l) => l.every((x) => done[x])).length, penuh: done.every(Boolean) };
+    return { kartu, done, garis: TTT_LINES.filter((l) => l.every((x) => done[x])).length, penuh: done.every(Boolean) };
   }
   commands.bingo = async (msg) => {
     if (!butuhRole(msg)) return;
     const s = statusBingo(msg.author.id);
+    const komponen = [row(btn(`g:bg:claim:${msg.author.id}`, 'Klaim hadiah', Success, '🎁'))];
+    const prof = profilDariUser(msg.author, msg.member);
+    const buf = await pakaiGambar((gm) => gm.renderBingo({ nama: prof.nama, avatarUrl: prof.avatarUrl, misi: s.kartu.map((k) => D.MISI[k]), done: s.done, garis: s.garis, penuh: s.penuh }));
+    if (buf) return balas(msg, gp(buf, 'bingo.png', { components: komponen }));
     const grid = [0, 1, 2].map((r) => [0, 1, 2].map((c) => (s.done[r * 3 + c] ? '✅' : '⬜')).join('')).join('\n');
     const daftar = s.kartu.map((k, n) => `${s.done[n] ? '✅' : '⬜'} **${n + 1}.** ${D.MISI[k]}`).join('\n');
     return balas(msg, {
       embeds: [baseEmbed('🎯 Ramadhan bingo', `${grid}\n\n${daftar}\n\nGaris selesai: **${s.garis}** · Kartu penuh: **${s.penuh ? 'ya' : 'belum'}**\n-# 1 garis = 5.000 money, kartu penuh = 15.000 money. Kartu ganti tiap hari. Misi tercatat otomatis.`, 0x9b59b6)],
-      components: [row(btn(`g:bg:claim:${msg.author.id}`, 'Klaim hadiah', Success, '🎁'))],
+      components: komponen,
     });
   };
   ctx.onButton('g:bg:', async (i) => {
@@ -679,15 +773,21 @@ module.exports = function games(ctx) {
     const t = D.TRIVIA[Number(idxS)];
     const benar = Number(kS) === t.a;
     track(uid, 'game');
-    let hadiah = '💵 +0 money';
+    let r = null;
     if (benar) {
       st.incTvStat.run(uid);
       track(uid, 'trivia');
-      hadiah = uang(giveGameMoney(uid, 2000));
+      r = giveGameMoney(uid, 2000);
     }
+    const tombol = [row(...t.o.map((o, k) => btn(`g:tv:x:${k}`, String(o).slice(0, 80), k === t.a ? Success : k === Number(kS) ? Danger : Secondary, null, true)))];
+    const buf = await kartuSolo(i, {
+      status: benar ? 'menang' : 'kalah', judul: 'DAILY TRIVIA',
+      baris: [['Soal', t.q.length > 34 ? `${t.q.slice(0, 33)}...` : t.q], ['Jawaban', String(t.o[t.a]).slice(0, 28)], ['Hadiah', r ? uangPolos(r) : '+0 money', benar ? HIJAU : undefined]],
+    });
+    if (buf) return i.update(gp(buf, 'hasil.png', { components: tombol, edit: true }));
     return i.update({
-      embeds: [baseEmbed(benar ? '✅ Benar!' : '❌ Salah', `**${t.q}**\nJawaban: **${t.o[t.a]}**\n\n${hadiah}`, benar ? 0x2ecc71 : 0xe74c3c)],
-      components: [row(...t.o.map((o, k) => btn(`g:tv:x:${k}`, String(o).slice(0, 80), k === t.a ? Success : k === Number(kS) ? Danger : Secondary, null, true)))],
+      embeds: [baseEmbed(benar ? '✅ Benar!' : '❌ Salah', `**${t.q}**\nJawaban: **${t.o[t.a]}**\n\n${r ? uang(r) : '💵 +0 money'}`, benar ? 0x2ecc71 : 0xe74c3c)],
+      components: tombol,
     });
   });
   commands.triviatop = async (msg) => {
@@ -697,7 +797,47 @@ module.exports = function games(ctx) {
   };
 
   // =========================================================
-  // 11. EVENT KILAT (bot buka game mendadak 3x per hari)
+  // 11. TEBAK BENDERA (bendera dari flagcdn, 4 pilihan)
+  // =========================================================
+  const flagEmoji = (kode) => String.fromCodePoint(...[...kode.toUpperCase()].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
+  const bdDijawab = new Set();
+  const bdOpsi = new Map(); // messageId -> urutan pilihan (indeks negara)
+  commands.tebakbendera = async (msg) => {
+    if (!butuhRole(msg)) return;
+    const idx = crypto.randomInt(D.NEGARA.length);
+    const [nama, kode] = D.NEGARA[idx];
+    const salah = shuffle(D.NEGARA.map((_, k) => k).filter((k) => k !== idx)).slice(0, 3);
+    const opsi = shuffle([idx, ...salah]);
+    const tombol = [row(...opsi.map((k) => btn(`g:bd:${msg.author.id}:${idx}:${k}`, D.NEGARA[k][0], Secondary)))];
+    const buf = await pakaiGambar((gm) => gm.renderBendera({ kode }));
+    const m = buf
+      ? await balas(msg, gp(buf, 'bendera.png', { components: tombol }))
+      : await balas(msg, { embeds: [baseEmbed('🏳️ Tebak bendera', `# ${flagEmoji(kode)}\nBendera negara apa ini?\n\nBenar = **2.000 money**`, 0x1abc9c)], components: tombol });
+    bdOpsi.set(m.id, opsi);
+    return m;
+  };
+  ctx.onButton('g:bd:', async (i) => {
+    const [, , uid, idxS, kS] = i.customId.split(':');
+    if (i.user.id !== uid) return deny(i, 'Ini soal orang lain. Ketik `.tebakbendera` buat soal kamu.');
+    if (bdDijawab.has(i.message.id)) return deny(i, 'Soal ini sudah dijawab.');
+    bdDijawab.add(i.message.id);
+    const [nama] = D.NEGARA[Number(idxS)];
+    const benar = Number(kS) === Number(idxS);
+    track(uid, 'game');
+    const r = benar ? giveGameMoney(uid, 2000) : null;
+    const urutan = bdOpsi.get(i.message.id) ?? [Number(idxS), Number(kS)];
+    bdOpsi.delete(i.message.id);
+    const tombol = [row(...urutan.map((k) => btn(`g:bd:x:${k}`, D.NEGARA[k][0], k === Number(idxS) ? Success : k === Number(kS) ? Danger : Secondary, null, true)))];
+    const buf = await kartuSolo(i, {
+      status: benar ? 'menang' : 'kalah', judul: 'TEBAK BENDERA',
+      baris: [['Jawaban', nama], ['Pilihanmu', D.NEGARA[Number(kS)][0]], ['Hadiah', r ? uangPolos(r) : '+0 money', benar ? HIJAU : undefined]],
+    });
+    if (buf) return i.update(gp(buf, 'hasil.png', { components: tombol, edit: true }));
+    return i.update({ embeds: [baseEmbed(benar ? '✅ Benar!' : '❌ Salah', `Jawabannya: **${nama}**\n\n${r ? uang(r) : '💵 +0 money'}`, benar ? 0x2ecc71 : 0xe74c3c)], components: tombol });
+  });
+
+  // =========================================================
+  // 12. EVENT KILAT (bot buka game mendadak 3x per hari)
   // =========================================================
   commands.setupevent = async (msg) => {
     const ch = msg.mentions.channels.first() || msg.channel;
@@ -745,11 +885,14 @@ module.exports = function games(ctx) {
     if (k !== e.a) return i.reply({ embeds: [errEmbed('Salah! Kamu nggak bisa jawab lagi di event ini.')], flags: EPHEMERAL });
     e.winner = i.user.id;
     track(i.user.id, 'game');
-    const r = uang(giveGameMoney(i.user.id, 5000));
-    return i.update({
-      embeds: [baseEmbed(`${e.judul} (selesai)`, `${e.q}\nJawaban: **${e.o[e.a]}**\n\n🏆 Pemenang: ${i.user}\n${r}`, 0x2ecc71)],
-      components: [row(...e.o.map((o, n) => btn(`g:ev:${n}`, String(o).slice(0, 80), n === e.a ? Success : Secondary, null, true)))],
+    const r = giveGameMoney(i.user.id, 5000);
+    const tombol = [row(...e.o.map((o, n) => btn(`g:ev:${n}`, String(o).slice(0, 80), n === e.a ? Success : Secondary, null, true)))];
+    const buf = await kartuSolo(i, {
+      status: 'menang', judul: e.judul.replace('⚡ ', '').toUpperCase(),
+      baris: [['Soal', e.q.replace(/\*\*/g, '').slice(0, 34)], ['Jawaban', String(e.o[e.a]).slice(0, 28)], ['Hadiah', uangPolos(r), HIJAU]],
     });
+    if (buf) return i.update(gp(buf, 'hasil.png', { components: tombol, edit: true, content: `🏆 ${i.user}` }));
+    return i.update({ embeds: [baseEmbed(`${e.judul} (selesai)`, `${e.q}\nJawaban: **${e.o[e.a]}**\n\n🏆 Pemenang: ${i.user}\n${uang(r)}`, 0x2ecc71)], components: tombol });
   });
   function rencanaEvent(day) {
     const raw = getCfg('event_plan');
@@ -766,7 +909,7 @@ module.exports = function games(ctx) {
     return plan;
   }
   ctx.onTick(async () => {
-    // tutup event yang kadaluarsa
+    // tutup event yang kedaluwarsa
     for (const [id, e] of events) {
       if (Date.now() > e.exp || e.winner) {
         if (!e.winner) {
@@ -790,9 +933,9 @@ module.exports = function games(ctx) {
     }
   });
 
-  // dipakai untuk tes
+  // dipakai oleh Activity (game gambar) dan tes
   return {
-    giveGameMoney, wordleFeedback, kataWordle, kartuBingo, putarSpin, tttMenang, soalKilat, rencanaEvent, parseUang, SPIN,
-    _games: games, _sk: sk, _events: events, _tl: tl, _tebakHarga: tebakHarga,
+    giveGameMoney, wordleFeedback, kataWordle, kartuBingo, putarSpin, tttMenang, soalKilat, rencanaEvent, parseUang, SPIN, uangPolos,
+    _games: games, _sk: sk, _events: events, _tl: tl, _tebakHarga: tebakHarga, _bdOpsi: bdOpsi,
   };
 };

@@ -3,7 +3,7 @@
 //  Fitur: absen sahur, notif sahur/buka, pengingat ibadah,
 //         kirim rules (form), quest tebak surat, poin & leaderboard (panel otomatis),
 //         getrole, clear chat, invite, absen berpoin, pasar & gacha (money),
-//         11 game, 11 fitur ibadah & kebaikan
+//         11 game, 11 fitur ibadah & kebaikan, XP & level, gambar buatan bot
 // ============================================================
 require('dotenv').config();
 const {
@@ -23,6 +23,7 @@ const {
   TextDisplayBuilder,
   MediaGalleryBuilder,
   MediaGalleryItemBuilder,
+  AttachmentBuilder,
   SeparatorBuilder,
 } = require('discord.js');
 const crypto = require('node:crypto');
@@ -59,10 +60,9 @@ const PRICE_MIN = 8000; // harga gacha (money)
 const PRICE_MAX = 15000;
 const PRICE_STEP = 1000;
 const GAME_DAILY_CAP = 40000; // batas money dari game per orang per hari
-const GACHA_DAILY_LIMIT = 5; // batas gacha berbayar per hari (gacha gratis nggak dihitung)
 // bobot per 1000 (total harus 1000). type: zonk | poin | free | robux
 const PRIZES = [
-  { key: 'zonk', label: 'Zonk', w: 430, type: 'zonk', amount: 0 },
+  { key: 'zonk', label: 'Zonk', w: 435, type: 'zonk', amount: 0 },
   { key: 'poin10', label: '+10 poin', w: 220, type: 'poin', amount: 10 },
   { key: 'poin15', label: '+15 poin', w: 120, type: 'poin', amount: 15 },
   { key: 'free1', label: '1x gacha gratis', w: 100, type: 'free', amount: 1 },
@@ -71,7 +71,6 @@ const PRIZES = [
   { key: 'robux12', label: '12 robux', w: 20, type: 'robux', amount: 12 },
   { key: 'robux30', label: '30 robux', w: 10, type: 'robux', amount: 30 },
   { key: 'robux50', label: '50 robux', w: 5, type: 'robux', amount: 50 },
-  { key: 'robux100', label: '100 robux (JACKPOT)', w: 5, type: 'robux', amount: 100 },
 ];
 if (PRIZES.reduce((a, p) => a + p.w, 0) !== 1000) throw new Error('Total bobot hadiah gacha harus 1000');
 
@@ -188,6 +187,10 @@ function spendMoney(uid, n) {
   q.addMoney.run(uid, -n);
   return true;
 }
+let xpApi = null;
+const addXp = (uid, n) => {
+  xpApi?.addXp(uid, n);
+};
 // Catat aktivitas harian (dipakai bingo)
 const track = (uid, key) => q.insActivity.run(uid, wibNow().day, key);
 const didToday = (uid, key) => !!q.hasActivity.get(uid, wibNow().day, key);
@@ -245,6 +248,47 @@ async function sendTo(channelId, payload) {
 }
 // ===========================================================
 
+// ======================= GAMBAR ============================
+let gambar = null;
+try {
+  gambar = require('./gambar');
+} catch (e) {
+  console.warn('[gambar] dimatikan, log & kartu pakai embed biasa:', e.message);
+}
+async function pakaiGambar(fn) {
+  if (!gambar) return null;
+  try {
+    return await fn(gambar);
+  } catch (e) {
+    console.error('[gambar]', e.message);
+    return null;
+  }
+}
+const lampiran = (buf, nama) => new AttachmentBuilder(buf, { name: nama });
+const profilDariUser = (u, member) => ({
+  nama: member?.displayName ?? u.globalName ?? u.username ?? 'Pemain',
+  avatarUrl: u.displayAvatarURL?.({ extension: 'png', size: 128 }) ?? '',
+});
+async function profil(id) {
+  try {
+    const u = client.users.cache.get(id) ?? (await client.users.fetch(id));
+    return profilDariUser(u, null);
+  } catch {
+    return { nama: 'Pemain', avatarUrl: '' };
+  }
+}
+// Log bergambar: mention teks (tanpa ping) + GIF bergerak di atas gambar kalau ada yang dapat money
+async function kirimLogGambar(channelId, { userId, img, gif = false, fallback }) {
+  if (img) {
+    const embeds = [];
+    if (gif && gambar?.ASSETS.LOG_GIF) embeds.push(new EmbedBuilder().setColor(COLOR).setImage(gambar.ASSETS.LOG_GIF));
+    embeds.push(new EmbedBuilder().setColor(COLOR).setImage('attachment://log.png').setFooter({ text: WATERMARK }));
+    return sendTo(channelId, { content: `<@${userId}>`, embeds, files: [lampiran(img, 'log.png')], allowedMentions: { parse: [] } });
+  }
+  return sendTo(channelId, { embeds: [fallback], allowedMentions: { parse: [] } });
+}
+// ===========================================================
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -298,6 +342,7 @@ async function handleAbsen(i) {
   q.addQuestPts.run(i.user.id, poin);
   addMoney(i.user.id, poin * MONEY_PER_POINT);
   track(i.user.id, 'absen');
+  addXp(i.user.id, poin);
   scheduleLeaderboardRefresh();
   const total = q.countAbsen.get(i.user.id).c;
   await i.reply({
@@ -305,11 +350,16 @@ async function handleAbsen(i) {
     flags: EPHEMERAL,
   });
 
-  await sendTo(ABSEN_LOG_CHANNEL_ID, {
-    embeds: [
-      baseEmbed('📝 Log Absen Sahur', `${i.user} hadir sahur\n🕒 Jam: **${waktu} WIB**\n💰 Dapat: **+${poin} poin** dan **+${fmt(poin * MONEY_PER_POINT)} money**\n📅 ${tglIndo(now.day)}\n🔢 Total hadir: **${total}x**`, 0x2ecc71),
-    ],
-    allowedMentions: { parse: [] },
+  const prof = profilDariUser(i.user, i.member);
+  const img = await pakaiGambar((g) =>
+    g.renderLog({
+      judul: 'LOG ABSEN SAHUR', nama: prof.nama, avatarUrl: prof.avatarUrl, bannerUrl: g.ASSETS.BANNER_ABSEN,
+      baris: [['Jam', `${waktu} WIB`], ['Tanggal', tglIndo(now.day)], ['Dapat', `+${poin} poin & +${fmt(poin * MONEY_PER_POINT)} money`, '#3fbf7f'], ['Total hadir', `${total}x`]],
+    }),
+  );
+  await kirimLogGambar(ABSEN_LOG_CHANNEL_ID, {
+    userId: i.user.id, img, gif: true,
+    fallback: baseEmbed('📝 Log Absen Sahur', `${i.user} hadir sahur\n🕒 Jam: **${waktu} WIB**\n💰 Dapat: **+${poin} poin** dan **+${fmt(poin * MONEY_PER_POINT)} money**\n📅 ${tglIndo(now.day)}\n🔢 Total hadir: **${total}x**`, 0x2ecc71),
   });
 }
 
@@ -608,6 +658,7 @@ async function handleQuestAnswer(i) {
     q.addQuestPts.run(uid, poin);
     addMoney(uid, poin * MONEY_PER_POINT);
     track(uid, 'quest');
+    addXp(uid, poin);
     scheduleLeaderboardRefresh();
   }
   const { total } = getPoints(uid);
@@ -620,15 +671,21 @@ async function handleQuestAnswer(i) {
 
   await i.update({ embeds: [hasil], components: questButtons(uid, day, slot, qd, { chosen: idx }) });
 
-  await sendTo(QUEST_LOG_CHANNEL_ID, {
-    embeds: [
-      baseEmbed(
-        '📜 Log Quest',
-        `${benar ? '✅' : '❌'} ${i.user} menjawab **Soal ${slot + 1}/${QUEST_PER_DAY}** (${benar ? 'benar' : 'salah'})\n💰 Dapat: **+${poin} poin** dan **+${fmt(poin * MONEY_PER_POINT)} money**\n🏅 Total poin: **${total}**`,
-        benar ? 0x2ecc71 : 0xe74c3c,
-      ),
-    ],
-    allowedMentions: { parse: [] },
+  const prof = profilDariUser(i.user, i.member);
+  const merah = '#d9534f', hijau = '#3fbf7f';
+  const img = await pakaiGambar((g) =>
+    g.renderLog({
+      judul: 'LOG QUEST', nama: prof.nama, avatarUrl: prof.avatarUrl, bannerUrl: g.ASSETS.BANNER_QUEST, warna: benar ? hijau : merah,
+      baris: [
+        ['Soal', `${slot + 1}/${QUEST_PER_DAY} (${benar ? 'benar' : 'salah'})`],
+        ['Dapat', benar ? `+${poin} poin & +${fmt(poin * MONEY_PER_POINT)} money` : '+0 poin, +0 money', benar ? hijau : merah],
+        ['Total poin', String(total)],
+      ],
+    }),
+  );
+  await kirimLogGambar(QUEST_LOG_CHANNEL_ID, {
+    userId: uid, img, gif: benar,
+    fallback: baseEmbed('📜 Log Quest', `${benar ? '✅' : '❌'} ${i.user} menjawab **Soal ${slot + 1}/${QUEST_PER_DAY}** (${benar ? 'benar' : 'salah'})\n💰 Dapat: **+${poin} poin** dan **+${fmt(poin * MONEY_PER_POINT)} money**\n🏅 Total poin: **${total}**`, benar ? 0x2ecc71 : 0xe74c3c),
   });
 }
 // ===========================================================
@@ -830,6 +887,7 @@ function countInviteFor(userId) {
   if (valid % INVITE_TARGET !== 0) return { inviterId: row.inviter_id, valid, awarded: false };
   q.addQuestPts.run(row.inviter_id, INVITE_POINTS);
   addMoney(row.inviter_id, INVITE_POINTS * MONEY_PER_POINT);
+  addXp(row.inviter_id, INVITE_POINTS);
   scheduleLeaderboardRefresh();
   return { inviterId: row.inviter_id, valid, awarded: true };
 }
@@ -837,15 +895,16 @@ function countInviteFor(userId) {
 async function onRoleGranted(userId) {
   const r = countInviteFor(userId);
   if (!r?.awarded) return;
-  await sendTo(QUEST_LOG_CHANNEL_ID, {
-    embeds: [
-      baseEmbed(
-        '🎉 Log Invite',
-        `<@${r.inviterId}> sudah mengundang **${r.valid} orang** yang valid (sudah ambil role)\n💰 Dapat: **+${INVITE_POINTS} poin** dan **+${fmt(INVITE_POINTS * MONEY_PER_POINT)} money**`,
-        0x2ecc71,
-      ),
-    ],
-    allowedMentions: { parse: [] },
+  const prof = await profil(r.inviterId);
+  const img = await pakaiGambar((g) =>
+    g.renderLog({
+      judul: 'LOG INVITE', nama: prof.nama, avatarUrl: prof.avatarUrl, bannerUrl: g.ASSETS.BANNER_INVITE,
+      baris: [['Orang valid', `${r.valid} orang`], ['Dapat', `+${INVITE_POINTS} poin & +${fmt(INVITE_POINTS * MONEY_PER_POINT)} money`, '#3fbf7f']],
+    }),
+  );
+  await kirimLogGambar(QUEST_LOG_CHANNEL_ID, {
+    userId: r.inviterId, img, gif: true,
+    fallback: baseEmbed('🎉 Log Invite', `<@${r.inviterId}> sudah mengundang **${r.valid} orang** yang valid (sudah ambil role)\n💰 Dapat: **+${INVITE_POINTS} poin** dan **+${fmt(INVITE_POINTS * MONEY_PER_POINT)} money**`, 0x2ecc71),
   });
 }
 
@@ -876,7 +935,7 @@ function ensureMarket() {
 const currentPrice = () => ensureMarket().price;
 const labelHarga = (p) => (p <= 10000 ? 'Murah' : p <= 12000 ? 'Normal' : 'Mahal');
 
-function pasarPayload() {
+function pasarPayloadV2() {
   ensureMarket();
   const hist = q.marketHist.all().reverse(); // lama -> baru
   const now = hist[hist.length - 1].price;
@@ -916,6 +975,31 @@ function pasarPayload() {
   return { components: [c], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } };
 }
 
+function dataPasar() {
+  ensureMarket();
+  const hist = q.marketHist.all().reverse().map((h) => h.price); // lama -> baru (maks 24)
+  const t = new Date((slotNow() + 1) * 3600000 + 7 * 3600000);
+  return {
+    price: hist[hist.length - 1],
+    prev: hist.length > 1 ? hist[hist.length - 2] : null,
+    label: labelHarga(hist[hist.length - 1]),
+    hist: hist.slice(-12),
+    tinggi: Math.max(...hist),
+    rendah: Math.min(...hist),
+    berubahJam: `${pad(t.getUTCHours())}:00 WIB`,
+  };
+}
+// Panel pasar bergambar. Kalau gambar gagal dibuat, pakai tampilan teks lama.
+async function pasarPesan() {
+  const img = await pakaiGambar((g) => g.renderPasar(dataPasar()));
+  if (!img) return null;
+  return {
+    content: '',
+    embeds: [new EmbedBuilder().setColor(0xf1c40f).setImage('attachment://pasar.png').setFooter({ text: WATERMARK })],
+    files: [lampiran(img, 'pasar.png')],
+  };
+}
+
 async function refreshPasarPanel() {
   const raw = getCfg('pasar_panel');
   if (!raw) return;
@@ -929,7 +1013,20 @@ async function refreshPasarPanel() {
     if (e.code === 10008 || e.code === 10003) setCfg('pasar_panel', '');
     return;
   }
-  await msg.edit(pasarPayload());
+  const lama = !!msg.flags?.has?.(MessageFlags.IsComponentsV2);
+  const baru = await pasarPesan();
+  if (!baru) {
+    if (lama) await msg.edit(pasarPayloadV2());
+    return;
+  }
+  if (lama) {
+    // panel lama berupa container teks: ganti jadi panel bergambar
+    const sent = await msg.channel.send(baru);
+    await msg.delete().catch(() => {});
+    setCfg('pasar_panel', JSON.stringify({ channel: info.channel, message: sent.id }));
+    return;
+  }
+  await msg.edit({ ...baru, attachments: [] });
 }
 
 async function runMarket() {
@@ -939,7 +1036,7 @@ async function runMarket() {
 // ===========================================================
 
 // ======================= GACHA =============================
-function gachaPanelPayload() {
+function gachaPanelV2() {
   const c = new ContainerBuilder().setAccentColor(0x9b59b6);
   if (GACHA_BANNER) c.addMediaGalleryComponents(bannerGallery(GACHA_BANNER));
   c.addTextDisplayComponents(txt('## 🎲 Siap buka kotak?\nKlik tombol di bawah buat gacha.'));
@@ -948,7 +1045,7 @@ function gachaPanelPayload() {
     txt(
       '📊 **Harga ngikutin pasar**\n-# Bayar sesuai harga saat kamu klik\n\n' +
         '💰 **Bayar pakai money**\n-# Harga 8.000 - 15.000 money, poin leaderboard nggak berkurang\n\n' +
-        `⏱️ **Maksimal ${GACHA_DAILY_LIMIT}x per hari**\n-# Gacha gratis nggak dihitung\n\n` +
+        '⏱️ **Tanpa batas harian**\n-# Selama money kamu cukup\n\n' +
         '📋 **Semua tercatat**\n-# Setiap gacha masuk ke log',
     ),
   );
@@ -960,6 +1057,19 @@ function gachaPanelPayload() {
   );
   c.addTextDisplayComponents(txt(`-# ${WATERMARK}`));
   return { components: [c], flags: MessageFlags.IsComponentsV2 };
+}
+
+async function gachaPanelPayload() {
+  const img = await pakaiGambar((g) => g.renderGachaPanel());
+  if (!img) return gachaPanelV2();
+  return {
+    files: [lampiran(img, 'gacha.png')],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('gacha:roll').setLabel('Gacha sekarang').setEmoji('🎲').setStyle(ButtonStyle.Primary),
+      ),
+    ],
+  };
 }
 
 function rollPrize() {
@@ -989,9 +1099,6 @@ async function handleGacha(i) {
   if (gratis) {
     q.setFree.run(uid, tokens - 1);
   } else {
-    if (terpakai >= GACHA_DAILY_LIMIT) {
-      return i.reply({ embeds: [errEmbed(`Batas gacha berbayar hari ini sudah habis (**${GACHA_DAILY_LIMIT}x**). Reset jam 00:00 WIB.`)], flags: EPHEMERAL });
-    }
     if (!spendMoney(uid, price)) {
       return i.reply({
         embeds: [errEmbed(`Money kamu kurang. Harga sekarang **${fmt(price)} money**, money kamu **${fmt(getMoney(uid))}**.`)],
@@ -1027,25 +1134,44 @@ async function handleGacha(i) {
   const hasil = baseEmbed(judul[0], judul[1], judul[2]).addFields(
     { name: 'Bayar', value: gratis ? 'Gratis' : `${fmt(price)} money`, inline: true },
     { name: 'Sisa money', value: fmt(sisa), inline: true },
-    { name: 'Gacha berbayar hari ini', value: `${terpakai}/${GACHA_DAILY_LIMIT}`, inline: true },
+    { name: 'Gacha berbayar hari ini', value: `${terpakai}x`, inline: true },
   );
   if (tokenSisa > 0) hasil.addFields({ name: 'Gacha gratis tersisa', value: `${tokenSisa}x`, inline: true });
 
+  const prof = profilDariUser(i.user, i.member);
+  const kartu = pakaiGambar((g) =>
+    g.renderGachaHasil({
+      nama: prof.nama, avatarUrl: prof.avatarUrl, tipe: prize.type, hadiah: prize.label,
+      detail: prize.type === 'poin' ? `+${fmt(prize.amount * MONEY_PER_POINT)} money masuk ke akun kamu` : prize.type === 'free' ? 'Tekan Gacha sekarang lagi buat pakai' : '',
+      bayar: gratis ? 'Gratis' : `${fmt(price)} money`, sisa: fmt(sisa), tokenSisa, hariIni: `${terpakai}x`,
+    }),
+  );
   try {
     await i.reply({ embeds: [baseEmbed('🎲 Membuka kotak...', '📦\nTunggu sebentar', 0x6b6f78)], flags: EPHEMERAL });
-    await sleep(2000);
-    await i.editReply({ embeds: [hasil] });
+    const [buf] = await Promise.all([kartu, sleep(2000)]);
+    if (buf) await i.editReply({ embeds: [], files: [lampiran(buf, 'gacha.png')], attachments: [] });
+    else await i.editReply({ embeds: [hasil] });
   } finally {
     gachaBusy.delete(uid);
   }
 
-  const log = baseEmbed('🎲 Log gacha', `${i.user} melakukan gacha`, judul[2]).addFields(
+  const warnaLog = { zonk: '#8a9a92', poin: '#3fbf7f', free: '#9b59b6', robux: '#d4af37' }[prize.type];
+  const barisLog = [
+    ['Harga', gratis ? 'Gratis (gacha gratis)' : `${fmt(price)} (${labelHarga(price)})`],
+    ['Hadiah', prize.label, warnaLog],
+    ['Sisa money', fmt(sisa)],
+  ];
+  if (prize.type === 'robux') barisLog.push(['Status', 'Menunggu redeem', '#d4af37']);
+  const imgLog = await pakaiGambar((g) =>
+    g.renderLog({ judul: 'LOG GACHA', nama: prof.nama, avatarUrl: prof.avatarUrl, bannerUrl: g.ASSETS.BANNER_GACHA, warna: warnaLog, baris: barisLog }),
+  );
+  const logEmbed = baseEmbed('🎲 Log gacha', `${i.user} melakukan gacha`, judul[2]).addFields(
     { name: 'Harga', value: gratis ? 'Gratis (pakai gacha gratis)' : `${fmt(price)} money (${labelHarga(price)})`, inline: true },
     { name: 'Hadiah', value: prize.label, inline: true },
     { name: 'Sisa money', value: fmt(sisa), inline: true },
   );
-  if (prize.type === 'robux') log.addFields({ name: 'Status', value: '⏳ Menunggu redeem (kirim robux manual ke pemenang)' });
-  await sendTo(GACHA_LOG_CHANNEL_ID, { embeds: [log], allowedMentions: { parse: [] } });
+  if (prize.type === 'robux') logEmbed.addFields({ name: 'Status', value: '⏳ Menunggu redeem (kirim robux manual ke pemenang)' });
+  await kirimLogGambar(GACHA_LOG_CHANNEL_ID, { userId: uid, img: imgLog, gif: prize.type === 'poin', fallback: logEmbed });
 }
 // ===========================================================
 
@@ -1259,14 +1385,14 @@ const commands = {
   async setuppasar(msg) {
     const ch = targetChannel(msg);
     if (!ch) return balasEmbed(msg, errEmbed('Channel tidak valid.'));
-    const sent = await ch.send(pasarPayload());
+    const sent = await ch.send((await pasarPesan()) ?? pasarPayloadV2());
     setCfg('pasar_panel', JSON.stringify({ channel: ch.id, message: sent.id }));
     return ch.id === msg.channel.id ? null : balasEmbed(msg, okEmbed(`Panel pasar gacha dipasang di ${ch} dan akan update otomatis tiap jam.`));
   },
   async setupgacha(msg) {
     const ch = targetChannel(msg);
     if (!ch) return balasEmbed(msg, errEmbed('Channel tidak valid.'));
-    await ch.send(gachaPanelPayload());
+    await ch.send(await gachaPanelPayload());
     return ch.id === msg.channel.id ? null : balasEmbed(msg, okEmbed(`Panel gacha terkirim ke ${ch}.`));
   },
   async rules(msg) {
@@ -1324,7 +1450,8 @@ const ctx = {
   client, db, WATERMARK, COLOR, EPHEMERAL, GAME_DAILY_CAP,
   baseEmbed, okEmbed, errEmbed, txt,
   isAdmin, hasMemberRole, wibNow, tglIndo, fmt, hm,
-  getMoney, addMoney, setMoney, track, didToday,
+  getMoney, addMoney, setMoney, track, didToday, addXp,
+  gambar, profil, profilDariUser, pakaiGambar, lampiran,
   sendTo, balas, balasEmbed, getCfg, setCfg,
   commands, adminCommands: ADMIN_ONLY,
   onButton: (prefix, fn) => registry.buttons.push([prefix, fn]),
@@ -1336,6 +1463,7 @@ const ctx = {
   },
   onTick: (fn) => registry.ticks.push(fn),
 };
+xpApi = require('./xp')(ctx);
 const gameApi = require('./games')(ctx);
 const ibadahApi = require('./ibadah')(ctx);
 // ===========================================================
@@ -1407,6 +1535,11 @@ client.once(Events.ClientReady, async (c) => {
   for (const g of c.guilds.cache.values()) await cacheInvites(g);
   runMarket().catch((e) => console.warn('[pasar]', e.message));
   setInterval(tick, 30 * 1000);
+  try {
+    require('./activity-server')(ctx, gameApi); // game gambar (Discord Activity), aktif kalau DISCORD_CLIENT_SECRET diisi
+  } catch (e) {
+    console.warn('[activity] gagal start:', e.message);
+  }
   tick();
 });
 

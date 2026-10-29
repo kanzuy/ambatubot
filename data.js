@@ -132,4 +132,18 @@ const MISI = {
   ayat: 'Baca 1 ayat',
 };
 
-module.exports = { TRIVIA, HARGA, LAGU, WORDLE_WORDS, SAMBUNG_START, MISI };
+
+// Tebak bendera: [nama negara, kode ISO-2]. Gambar bendera diambil dari flagcdn.com
+const NEGARA = [
+  ['Indonesia', 'ID'], ['Malaysia', 'MY'], ['Singapura', 'SG'], ['Thailand', 'TH'], ['Filipina', 'PH'], ['Vietnam', 'VN'],
+  ['Brunei', 'BN'], ['Jepang', 'JP'], ['Korea Selatan', 'KR'], ['Tiongkok', 'CN'], ['India', 'IN'], ['Pakistan', 'PK'],
+  ['Bangladesh', 'BD'], ['Arab Saudi', 'SA'], ['Uni Emirat Arab', 'AE'], ['Qatar', 'QA'], ['Turki', 'TR'], ['Mesir', 'EG'],
+  ['Palestina', 'PS'], ['Iran', 'IR'], ['Irak', 'IQ'], ['Maroko', 'MA'], ['Aljazair', 'DZ'], ['Tunisia', 'TN'],
+  ['Nigeria', 'NG'], ['Kenya', 'KE'], ['Ethiopia', 'ET'], ['Afrika Selatan', 'ZA'], ['Australia', 'AU'], ['Selandia Baru', 'NZ'],
+  ['Inggris', 'GB'], ['Prancis', 'FR'], ['Jerman', 'DE'], ['Italia', 'IT'], ['Spanyol', 'ES'], ['Belanda', 'NL'],
+  ['Portugal', 'PT'], ['Swiss', 'CH'], ['Swedia', 'SE'], ['Norwegia', 'NO'], ['Rusia', 'RU'], ['Ukraina', 'UA'],
+  ['Polandia', 'PL'], ['Yunani', 'GR'], ['Amerika Serikat', 'US'], ['Kanada', 'CA'], ['Meksiko', 'MX'], ['Brasil', 'BR'],
+  ['Argentina', 'AR'], ['Kolombia', 'CO'], ['Chili', 'CL'], ['Peru', 'PE'],
+];
+
+module.exports = { TRIVIA, HARGA, LAGU, WORDLE_WORDS, SAMBUNG_START, MISI, NEGARA };

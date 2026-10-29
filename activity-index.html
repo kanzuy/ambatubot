@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="client-id" content="{{CLIENT_ID}}">
+<title>Game Gambar</title>
+<style>
+  :root { --h0:#06281d; --h1:#0b3d2e; --h2:#145a43; --emas:#d4af37; --emas2:#f4d97a; --teks:#f7f2de; --redup:#b9c9bd; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--h0); color:var(--teks); font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  body { display:flex; flex-direction:column; min-height:100%; background:linear-gradient(135deg,var(--h1),var(--h0)); }
+  header { padding:10px 14px; border-bottom:2px solid var(--emas); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  header h1 { margin:0; font-size:18px; color:var(--emas2); }
+  #info { flex:1; font-size:15px; display:flex; gap:14px; flex-wrap:wrap; align-items:center; }
+  #hint { font-family:ui-monospace,Menlo,Consolas,monospace; letter-spacing:4px; font-size:20px; color:var(--emas2); }
+  #timer { background:var(--emas); color:var(--h0); font-weight:700; border-radius:14px; padding:2px 12px; }
+  main { flex:1; display:flex; gap:12px; padding:12px; flex-wrap:wrap; justify-content:center; }
+  .kol { display:flex; flex-direction:column; gap:8px; }
+  canvas { background:#fff; border:3px solid var(--emas); border-radius:12px; width:min(94vw,640px); aspect-ratio:4/3; touch-action:none; cursor:crosshair; }
+  #alat { display:none; gap:6px; flex-wrap:wrap; align-items:center; }
+  .warna { width:28px; height:28px; border-radius:50%; border:2px solid #fff3; cursor:pointer; }
+  .warna.aktif { border-color:var(--emas2); transform:scale(1.15); }
+  button { background:var(--emas); color:var(--h0); border:0; border-radius:10px; padding:8px 14px; font-weight:700; cursor:pointer; }
+  button.sek { background:var(--h2); color:var(--teks); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .panel { width:min(94vw,300px); display:flex; flex-direction:column; gap:8px; }
+  .kartu { background:#0006; border:1px solid var(--emas); border-radius:12px; padding:10px; }
+  #chat { height:190px; overflow-y:auto; font-size:14px; display:flex; flex-direction:column; gap:3px; }
+  #chat .benar { color:#3fbf7f; font-weight:700; }
+  #chat .sistem { color:var(--redup); font-style:italic; }
+  #skor div { display:flex; justify-content:space-between; gap:8px; padding:3px 0; font-size:14px; }
+  #skor .benar { color:#3fbf7f; } #skor .gambar { color:var(--emas2); }
+  form { display:flex; gap:6px; } input { flex:1; padding:8px; border-radius:10px; border:1px solid var(--emas); background:#0008; color:var(--teks); font-size:16px; }
+  #lobby, #hasil { text-align:center; padding:20px; }
+  #hasil { display:none; } .daftar { display:flex; gap:8px; flex-wrap:wrap; justify-content:center; margin:12px 0; }
+  .pemain { background:#0006; border:1px solid var(--emas); border-radius:20px; padding:4px 12px 4px 4px; display:flex; align-items:center; gap:8px; }
+  .pemain img { width:28px; height:28px; border-radius:50%; background:var(--h2); }
+  #status { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:24px; background:var(--h0); z-index:9; font-size:18px; }
+  #toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:var(--emas); color:var(--h0); font-weight:700; padding:8px 16px; border-radius:20px; display:none; z-index:10; }
+</style>
+</head>
+<body>
+<div id="status">Menghubungkan ke Discord...</div>
+<header><h1>Game Gambar</h1><div id="info"></div></header>
+<main>
+  <div class="kol" id="kolGame" style="display:none">
+    <canvas id="c" width="800" height="600"></canvas>
+    <div id="alat"></div>
+  </div>
+  <div class="panel" id="panel" style="display:none">
+    <div class="kartu"><div id="chat"></div></div>
+    <form id="formTebak"><input id="tebak" autocomplete="off" placeholder="Ketik tebakanmu..." maxlength="60"><button>Kirim</button></form>
+    <div class="kartu" id="skor"></div>
+  </div>
+  <div id="lobby" class="kartu" style="display:none">
+    <h2 style="margin:0 0 6px;color:var(--emas2)">Lobi</h2>
+    <div>Satu orang menggambar, yang lain menebak. Tiap pemain dapat giliran menggambar.</div>
+    <div class="daftar" id="daftar"></div>
+    <button id="mulai">Mulai game</button>
+    <div id="catatan" style="margin-top:10px;font-size:13px;color:var(--redup)"></div>
+  </div>
+  <div id="hasil" class="kartu"></div>
+</main>
+<div id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>
